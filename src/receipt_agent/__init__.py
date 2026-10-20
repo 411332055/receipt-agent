@@ -34,6 +34,7 @@ HEADERS = ["記錄時間", "上傳者", "消費日期", "店家", "類別", "品
 COL = {name: i for i, name in enumerate(HEADERS)}
 CATEGORIES = ["餐飲", "交通", "購物", "日用品", "醫療", "娛樂", "水電通訊", "其他"]
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+INPUT_EXTS = IMAGE_EXTS | {".pdf"}  # 電子發票常以截圖或 email 附的 PDF 出現
 NOT_RECEIPT = "不是收據"
 
 
@@ -59,8 +60,11 @@ def safe_cell(value):
 def build_prompt(user_text: str, photo_name: str) -> str:
     # 上傳者文字只放進標記清楚的資料區塊，不接成指令。
     return (
-        f"請用 Read 工具讀取目前資料夾中的圖片 {photo_name}，判斷它是不是收據或發票"
-        "（含電子發票明細、手寫收據、信用卡簽單）。\n"
+        f"請用 Read 工具讀取目前資料夾中的檔案 {photo_name}（圖片或 PDF），判斷它是不是收據或發票"
+        "（含紙本發票、手機載具／電子發票 App 截圖、email 寄來的電子發票 PDF、手寫收據、信用卡簽單）。\n"
+        "發票號碼為 2 個英文字母加 8 位數字（可能有連字號，請去掉）；"
+        "不是這個格式的編號（例如訂單編號）invoice_no 請留空字串；"
+        "金額以「總計／合計」為準，不要取單項金額或稅額。\n"
         "只輸出一個 JSON 物件，不要其他文字，欄位：\n"
         '{"is_receipt": true/false, "store": "店家名稱", "date": "YYYY-MM-DD", '
         '"category": "類別", "items": "品項（逗號分隔，最多 10 項）", '
@@ -76,6 +80,17 @@ def build_prompt(user_text: str, photo_name: str) -> str:
         f"<untrusted_user_text>\n{user_text}\n</untrusted_user_text>"
     )
 # ==== 防護 2 結束 ====
+
+
+def norm_invoice(v) -> str:
+    """發票號碼正規化：去掉空白與連字號、轉大寫（EF-31362164 → EF31362164）。"""
+    return re.sub(r"[^0-9A-Za-z]", "", str(v or "")).upper()
+
+
+def valid_invoice(v) -> str:
+    """統一發票號碼為 2 個英文字母＋8 位數字；訂單編號等其他格式一律視為沒有。"""
+    n = norm_invoice(v)
+    return n if re.fullmatch(r"[A-Z]{2}\d{8}", n) else ""
 
 
 def parse_result(raw: str) -> dict | None:
@@ -100,7 +115,7 @@ def parse_result(raw: str) -> dict | None:
             "category": category if category in CATEGORIES else "其他",
             "items": str(d["items"]),
             "total": total,
-            "invoice_no": str(d.get("invoice_no", "")).strip(),
+            "invoice_no": valid_invoice(d.get("invoice_no", "")),
         }
     except (ValueError, KeyError, TypeError):
         return None
@@ -156,11 +171,6 @@ def month_rows(rows: list[tuple], now: datetime, uploader: str) -> list[tuple]:
 
 def month_total(rows: list[tuple], now: datetime, uploader: str) -> float:
     return sum(to_amount(r[COL["金額(元)"]]) for r in month_rows(rows, now, uploader))
-
-
-def norm_invoice(v) -> str:
-    """發票號碼正規化：去掉空白與連字號、轉大寫（EF-31362164 → EF31362164）。"""
-    return re.sub(r"[^0-9A-Za-z]", "", str(v or "")).upper()
 
 
 def is_duplicate(rows: list[tuple], uploader: str, result: dict) -> bool:
@@ -294,7 +304,7 @@ async def on_message(message: discord.Message):
         await message.reply(report)
         return
     for att in message.attachments:
-        if Path(att.filename).suffix.lower() in IMAGE_EXTS:
+        if Path(att.filename).suffix.lower() in INPUT_EXTS:
             await message.add_reaction("⏳")
             await queue.put((message, att))
             break

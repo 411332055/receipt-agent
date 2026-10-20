@@ -276,11 +276,12 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 queue: asyncio.Queue = asyncio.Queue()
+pending: dict[int, int] = {}  # message.id → 這則訊息還沒處理完的附件數
 
 
 async def worker():
     while True:
-        message, att = await queue.get()
+        message, att, idx, total = await queue.get()
         try:
             data = await att.read()
             ext = Path(att.filename).suffix.lower() or ".jpg"
@@ -289,11 +290,19 @@ async def worker():
         except Exception as e:  # 單張失敗不能讓整支程式停掉
             print(f"[錯誤] 處理失敗：{e}")
             reply = "分析失敗，請再傳一次"
+        if total > 1:
+            reply = f"【第 {idx}/{total} 張】\n{reply}"
         try:
             await message.reply(reply)
-            await message.remove_reaction("⏳", client.user)
         except discord.DiscordException as e:
             print(f"[警告] 回覆失敗：{e}")
+        pending[message.id] -= 1
+        if pending[message.id] <= 0:  # 這則訊息的照片都處理完才拿掉 ⏳
+            del pending[message.id]
+            try:
+                await message.remove_reaction("⏳", client.user)
+            except discord.DiscordException as e:
+                print(f"[警告] 移除 ⏳ 失敗：{e}")
         queue.task_done()
 
 
@@ -315,11 +324,13 @@ async def on_message(message: discord.Message):
         report = await asyncio.to_thread(monthly_report, message.author.display_name)
         await message.reply(report)
         return
-    for att in message.attachments:
-        if Path(att.filename).suffix.lower() in INPUT_EXTS:
-            await message.add_reaction("⏳")
-            await queue.put((message, att))
-            break
+    atts = [a for a in message.attachments if Path(a.filename).suffix.lower() in INPUT_EXTS]
+    if not atts:
+        return
+    await message.add_reaction("⏳")
+    pending[message.id] = len(atts)
+    for i, att in enumerate(atts, 1):  # 一則訊息可附多張，每張都要處理（依序排隊）
+        await queue.put((message, att, i, len(atts)))
 
 
 def main():

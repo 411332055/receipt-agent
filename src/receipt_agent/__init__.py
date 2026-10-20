@@ -173,17 +173,22 @@ def month_total(rows: list[tuple], now: datetime, uploader: str) -> float:
     return sum(to_amount(r[COL["金額(元)"]]) for r in month_rows(rows, now, uploader))
 
 
-def is_duplicate(rows: list[tuple], uploader: str, result: dict) -> bool:
-    """有發票號碼時以號碼判斷（發票號碼全國唯一，不分上傳者）；
-    沒有號碼時，同一人、同店家、同日期、同金額視為重複。"""
+def find_duplicate(rows: list[tuple], uploader: str, result: dict) -> tuple[str, tuple] | None:
+    """回傳 ("invoice", 原紀錄) 或 ("similar", 原紀錄)，沒有重複則 None。
+    發票號碼全國唯一，相同即確定重複（不分上傳者）；
+    沒有號碼時，同一人、同店家、同日期、同金額只算「疑似」重複。"""
     invoice = norm_invoice(result["invoice_no"])
     if len(invoice) >= 8:
-        return any(norm_invoice(r[COL["發票號碼"]]) == invoice for r in rows)
-    return any(
-        r[COL["上傳者"]] == uploader and r[COL["店家"]] == safe_cell(result["store"])
-        and str(r[COL["消費日期"]] or "") == result["date"]
-        and to_amount(r[COL["金額(元)"]]) == result["total"]
-        for r in rows)
+        for r in rows:
+            if norm_invoice(r[COL["發票號碼"]]) == invoice:
+                return "invoice", r
+        return None
+    for r in rows:
+        if (r[COL["上傳者"]] == uploader and r[COL["店家"]] == safe_cell(result["store"])
+                and str(r[COL["消費日期"]] or "") == result["date"]
+                and to_amount(r[COL["金額(元)"]]) == result["total"]):
+            return "similar", r
+    return None
 
 
 def append_record(row: list, retries: int = 30) -> bool:
@@ -224,7 +229,14 @@ def process(photo_bytes: bytes, ext: str, user_text: str, uploader: str) -> str:
     if not result["is_receipt"]:
         result.update(store=NOT_RECEIPT, total=0.0, date="", category="其他", invoice_no="")
     rows = load_rows()
-    duplicate = result["is_receipt"] and is_duplicate(rows, uploader, result)
+    found = find_duplicate(rows, uploader, result) if result["is_receipt"] else None
+    if found and found[0] == "invoice":
+        # 同一張發票不重複建檔、不重複計入累計。
+        orig = found[1]
+        return (f"🔁 這張發票（{result['invoice_no']}）已在 {orig[COL['記錄時間']]} 記錄過"
+                f"（{orig[COL['店家']]}，{to_amount(orig[COL['金額(元)']]):,.0f} 元），未重複計入。\n"
+                f"{uploader} 本月累計仍為：{month_total(rows, now, uploader):,.0f} 元")
+    duplicate = found is not None
     path = save_photo(photo_bytes, ext, result["store"], result["total"], now)
     total = month_total(rows, now, uploader) + result["total"]
     ok = append_record([now.strftime("%Y-%m-%d %H:%M:%S"), uploader, result["date"],
@@ -233,7 +245,7 @@ def process(photo_bytes: bytes, ext: str, user_text: str, uploader: str) -> str:
     note = "" if ok else "\n（注意：Excel 寫入失敗，這筆未建檔）"
     if not result["is_receipt"]:
         return f"你傳的不是收據，是 {result['items']}{note}"
-    warn = "\n⚠️ 這張看起來和之前記過的收據重複（已照樣建檔，請自行確認）" if duplicate else ""
+    warn = "\n⚠️ 和之前記過的收據店家、日期、金額都相同，可能重複（已建檔，請自行確認）" if duplicate else ""
     invoice = f"\n發票號碼：{result['invoice_no']}" if result["invoice_no"] else ""
     return (f"🧾 店家：{result['store']}（{result['category']}）\n"
             f"消費日期：{result['date'] or '無法辨識'}\n"

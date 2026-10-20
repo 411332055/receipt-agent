@@ -1,0 +1,20 @@
+[project]
+name = "receipt-agent"
+version = "0.1.0"
+description = "Discord 收據/發票記帳 agent"
+authors = [
+    { name = "iceboy", email = "411332055@gms.ndhu.edu.tw" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "discord-py>=2.7.1",
+    "openpyxl>=3.1.5",
+    "python-dotenv>=1.2.4",
+]
+
+[project.scripts]
+receipt-agent = "receipt_agent:main"
+
+[build-system]
+requires = ["uv_build>=0.12.14,<0.13.0"]
+build-backend = "uv_build"

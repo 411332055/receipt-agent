@@ -149,8 +149,11 @@ def analyze_photo(photo_bytes: bytes, ext: str, user_text: str) -> dict | None:
 def load_rows() -> list[tuple]:
     if not EXCEL_PATH.exists():
         return []
-    ws = load_workbook(EXCEL_PATH, read_only=True).active
-    return [r for r in ws.iter_rows(min_row=2, values_only=True) if r and r[0]]
+    wb = load_workbook(EXCEL_PATH, read_only=True)
+    try:  # read_only 模式不會自動關檔，不關的話 Windows 上檔案會一直被占住
+        return [r for r in wb.active.iter_rows(min_row=2, values_only=True) if r and r[0]]
+    finally:
+        wb.close()
 
 
 def to_amount(v) -> float:
